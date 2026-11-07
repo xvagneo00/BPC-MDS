@@ -5,11 +5,13 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/andreykaipov/goobs"
+	goobs_inputs "github.com/andreykaipov/goobs/api/requests/inputs"
 	goobs_sources "github.com/andreykaipov/goobs/api/requests/sources"
 	goobs_ui "github.com/andreykaipov/goobs/api/requests/ui"
 )
@@ -44,6 +46,25 @@ const studiooff = `	<div class="container text-center">
 		</div>
 	</div>`
 
+const itemrowf = `					<tr><td>%s</td><td>%v</td></tr>
+`
+const itemf = `		<div class="container text-center border m-6 p-2 w-25">
+			<img src="%s" class="img-fluid border">
+			<div><h3>%s</h3></div>
+			<table class="table">
+				<thead>
+					<tr>
+						<th scope="col">name</th>
+						<th scope="col">value</th>
+					</tr>
+				</thead>
+				<tbody>
+%s
+				</tbody>
+			</table>
+		</div>
+`
+
 const pagef = `<!DOCTYPE html>
 <html>
 <head>
@@ -53,12 +74,26 @@ const pagef = `<!DOCTYPE html>
 </head>
 <body class="m-5">
 %s
+	<div class="d-flex flex-wrap justify-content-center">
+%s
+	</div>
 	<form id="form" method="post" action=""></form>
 </body>
 </html>`
 
 var page atomic.Value
 var mu sync.Mutex
+
+func makescreenshot(uuid string) (string, error) {
+	params := goobs_sources.NewGetSourceScreenshotParams().WithSourceUuid(uuid).WithImageCompressionQuality(-1).WithImageFormat("png")
+	mu.Lock()
+	screenshot, err := client.Sources.GetSourceScreenshot(params)
+	mu.Unlock()
+	if err != nil {
+		return "", err
+	}
+	return screenshot.ImageData, nil
+}
 
 func render() {
 	for {
@@ -90,20 +125,39 @@ func render() {
 			studioimgs[1] = program.SceneUuid
 
 			for i := range studioimgs {
-				params := goobs_sources.NewGetSourceScreenshotParams().WithSourceUuid(studioimgs[i]).WithImageCompressionQuality(-1).WithImageFormat("png")
-				mu.Lock()
-				screenshot, err := client.Sources.GetSourceScreenshot(params)
-				mu.Unlock()
+				studioimgs[i], err = makescreenshot(studioimgs[i])
 				if err != nil {
 					log.Fatal(err)
 				}
-				studioimgs[i] = screenshot.ImageData
 			}
 
 			studio = fmt.Sprintf(studioonf, studioimgs[0], studioimgs[1])
 		}
 
-		page.Store(fmt.Sprintf(pagef, studio))
+		mu.Lock()
+		list, err := client.Inputs.GetInputList()
+		mu.Unlock()
+		if err != nil {
+			log.Fatal(err)
+		}
+		var items strings.Builder
+		for _, v := range list.Inputs {
+			params := goobs_inputs.NewGetInputSettingsParams().WithInputUuid(v.InputUuid)
+			mu.Lock()
+			settings, err := client.Inputs.GetInputSettings(params)
+			mu.Unlock()
+			if err != nil {
+				log.Fatal(err)
+			}
+			var rows strings.Builder
+			for l, w := range settings.InputSettings {
+				rows.WriteString(fmt.Sprintf(itemrowf, l, w))
+			}
+			screenshot, _ := makescreenshot(v.InputUuid)
+			items.WriteString(fmt.Sprintf(itemf, screenshot, v.InputName, rows.String()))
+		}
+
+		page.Store(fmt.Sprintf(pagef, studio, items.String()))
 		time.Sleep(5 * time.Second)
 	}
 }
